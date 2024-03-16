@@ -1,0 +1,391 @@
+---
+title: "Midterm"
+author: "Kevin Huang"
+date: "2024-03-15"
+output: html_document
+---
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE, warning = FALSE, include = FALSE}
+#install.packages(c("data.table","kableExtra", "R.utils"))
+#install.packages("plyr")
+```
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+library(rvest)
+library(xml2)
+library(httr)
+
+library(data.table)
+library(leaflet)
+library(tidyverse)
+library(ggplot2)
+library(tidyr)
+library(kableExtra)
+
+library(dplyr)
+```
+
+# Introduction
+
+For my project, I chose to work with data surrounding one of my old hobbies, Pokémon trading cards (and their market). Pokémon trading cards are collectible cards that feature illustrations of characters or items along with effects written in text that describe a card's effect in a game that can be played using a collection of these cards. Each card belongs to a set representing an overarching theme for the collection of cards. The cards are printed by The Pokémon Company and are sold in bundles unique to a set (e.x. 10 cards in one bundle, all from one set of cards). However, when purchasing a bundle/pack of cards, the cards you receive are up to chance (known as a 'Gacha' system). With this randomized system in place, each card has a rarity which influences the probability of it appearing in a pack of cards (unfortunately the official probabilities are unknown, otherwise I would have loved to use them in my study). Due to the luck-based system of obtaining cards, a market for these cards have formed where individuals may purchase a specific card from another individual who has a copy. Over time, certain cards appreciate in value, while other cards either have their price stagnate or even depreciate. 
+
+For an individual in the market who wants to acquire a copy of a card, it is difficult to identify the best time to purchase the card given its characteristics (such as its rarity or illustration). Similarly, someone who looks to gain a profit in this market, by purchasing certain cards and selling them later, may also find it difficult to decide which cards would generate them a profit. Thus, many individuals in the market face the problem of identifying what factors affect a Pokémon card's value. Motivated by this problem and personally intrigued in what drives the prices of cards within this market, I decided to conduct a study to explore and analyze the relationships between certain aspects of Pokémon cards and their price in the market.
+
+However, as previously mentioned, Pokémon cards all have an assigned rarity. Cards with the rarity "Common" or "Uncommon" appear often in packs, hence a majority of these cards are worth only a few cents and generally stagnate in price. Since these "Common" and "Uncommon" cards are so easily obtainable, there is not much activity in the market for these types of cards. Thus, my study will focus on Pokémon cards with rarity "Rare" or above (there are multiple sub-rarities). Finally, the price used in this study to measure the value of each Pokémon card is calculated in Euros and taken from an online source that tracks prices of English Pokémon cards, found at https://www.cardmarket.com/en/Pokemon (I wanted to use prices in USD, however, this was not possible due to the formatting of data in the API for the American market, which will be explained later). Therefore, with the previously mentioned motivation for this study and the background of its data established, my study is conducted with the purpose of answering the following research question: "How do characteristics of a rare Pokémon card affect its selling price in Euros". The key variables in my study include: the age of the card (days since release), the type of card (with respect to the game), the artist of the card's illustration, the total number of cards in the set, as well as the dependent variable of price in Euros. Other variables of interest I wish to explore at this stage of the study include the name of the featured character/item in the card and its series (a collection of sets).
+
+# Methods
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+# the maximum number of observations/cards per page is 250
+# there a total of 34 pages
+card_data <- data.frame()
+for (i in 1:34) {
+  card_query <- GET(
+    url = "https://api.pokemontcg.io/",
+    path = "v2/cards",
+    query = list(
+      pageSize=250, #maximum at once
+      page = i,
+      q = "id:* name:* supertype:* rarity:* artist:* -rarity:common -rarity:uncommon cardmarket.prices.averageSellPrice:[0 TO *]"
+    ))
+  card_sample <- content(card_query)
+  card_sample <- lapply(card_sample$data, function(a) {
+    data.frame(
+      card_id = a$id,
+      card_name = a$name,
+      card_type = a$supertype,
+      set_id = a$set$id,
+      price_euros = a$cardmarket$prices$averageSellPrice,
+      rarity = a$rarity,
+      artist = a$artist
+    )
+  })
+  card_sample <- do.call(rbind, card_sample)
+  card_data <- rbind(card_data, card_sample)
+}
+```
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+set_query <- GET(
+  url = "https://api.pokemontcg.io/",
+  path = "v2/sets"
+)
+
+set_data <- content(set_query)
+set_data <- lapply(set_data$data, function(a) {
+  data.frame(
+    set_id = a$id,
+    total_cards = a$total,
+    release_date = a$releaseDate
+  )
+})
+set_data <- do.call(rbind, set_data)
+# set_data now holds the set's id, total number of cards in the set, and its release date.
+```
+
+
+I acquired my data from a free API (no key required) named the "Pokémon TCG API" (found at https://docs.pokemontcg.io/) that contains data on every Pokémon card released from the first set until the present day (in JSON format). To obtain the data necessary for my study, I requested data on both cards and sets. The set data contains key variables relevant to this study such as the release date of the set (all cards in a set release with the set itself). Each request generates a maximum of $250$ observations (this limit is set by the API) and is provided in JSON format. Thus, I was able to use the method taught in lecture to acquire the data as follows:
+
+When requesting data for sets, I acquired variables of interest including the set's id (chr), name (chr), series (chr), the total number of cards available in the set (integer), and the set's release date (chr in "Year/Month/Day" format). A series typically lasts for 2 years and will focus on characters from Pokémon video games during that time frame (all sets released during that time belong to that series). There are a total of $158$ sets in the data, so only $1$ request was required for sets. The set dataset contains $158$ rows with $5$ columns.
+
+When requesting data for cards, I acquired variables of interest such as the card's current average market price in Euros (numeric), id (chr), the card's name/featured character (chr), the type of card (referred to as supertype in the API) (chr), its rarity (chr), the artist of its illustration (chr), and its set id (chr) for merging the two datasets. As previously mentioned, this study will only consider cards that do not have rarity "Common" or "Uncommon", so I made sure to exclude these observations when requesting data from the API by using the query. Additionally, there were issues regarding missing data leading to import issues, which required more queries in each API request (I will elaborate further in the next paragraph). There are a total of $8335$ cards that met the requirements for my data ("Rare" or above, and no import issues/missing values), which required $34$ requests to the API since each request gives $250$ observations/cards. I combined all these observations into one dataset for cards with $8335$ rows and $7$ columns.
+
+After importing the data, I followed the EDA checklist (including data cleaning and wrangling). The API used to acquire my data had some missing values in a few observations, with variables such as artist or price. However, rather than representing the missing values as $NA$ or any type of placeholder (such as $0$ or an empty string), the variables/columns for the missing values were not present for the observations that had those missing values. Thus, importing data with these observations led to severe import issues which did not allow a dataset to be created (errors with respect to dimension). To correctly import the data, I had to add query filters regarding each problematic variable to the card data requests to ensure no missing data (and hence no import issues) would be acquired. The formatting of the API for the card data forced me to deal with missing data and data errors through the API's query rather than through R (on the other hand, it ensures that no missing values or data errors remained, which I double-checked in R).
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+write.csv(card_data, "card_data.csv", row.names = FALSE)
+write.csv(set_data, "set_data.csv", row.names = FALSE)
+```
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+data <- merge(
+  x = card_data,
+  y = set_data,
+  by.x = c("set_id"),
+  by.y = c("set_id")
+)
+```
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+str(data)
+dim(data)
+```
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+data$release_date <- as.Date(data$release_date, format = "%Y/%m/%d")
+data$days_old = as.integer(difftime(Sys.Date(), data$release_date, units = "days"))
+```
+
+Continuing with data cleaning and wrangling, I then merged the cards dataset with the sets dataset by set id, which both datasets contained. This allowed me to correctly obtain a merged dataset with $8335$ rows/observations (cards) and $12$ columns/variables. With this merged dataset, I will continue data wrangling by adding a new variable to represent the number of days passed since the release date of the set each card belongs to. Naturally, this variable is an integer and is created using the release date of each card/set and the current date. Note that the use of the current date (March 15, 2024 as of submission) raises issues regarding the reproducibility of this study, which I will address later in this section. To create this variable, I first had to check the types of each variable (release date was represented as a string). Next, I converted the release date to a Date variable and used the current date to calculate the value for the variable (number of days since release) as an integer. I named this variable "days_old".
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+data$rarity <- as.factor(data$rarity)
+data$card_name <- as.factor(data$card_name)
+data$set_id <- as.factor(data$set_id)
+data$artist <- as.factor(data$artist)
+```
+
+Finally, I converted each string (chr) variable into a factor variable to explore and analyze relationships using those variables. However, some variables contain a large amount of factor levels, so these would be unfeasible to use in a model (e.x. card name/featured character has $2649$ levels which would require $2648$ dummy variables in a linear regression model). However, at this stage which focuses on exploring the data, it is still worthwhile to look at some of these variables. To summarize the key variables in my dataset, here is a table including the variable's name, the variable's type, what the variable represents, and the justification for considering this variable:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+tbl <- data.frame(
+  Variables = c("Average Selling Price (Euros)", "Number of Days Passed Since Release", "Rarity", "Artist", "Number of Cards in Set", "Card Name", "Card Type"),
+  Type = c("Numeric", "Integer", "Factor (31 levels)", "Factor (278 levels)", "Integer", "String (chr)", "Factor (2 levels)"),
+  Description = c("Response Variable. Current average selling price of a card in Euros", "The number of days from the current day to card's release date", "Rarity of the card", "Illustrator of card's artwork", "Total number of cards in the card's set", "The card's name, describing the primary character featured in the card", "The type of card. Pokemon or Trainer [Energy excluded]")
+)
+
+kbl(tbl, caption = "Table 0: Variable Summary") %>%
+  kable_paper(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, border_right = T, width = "9em") %>%
+  column_spec(3, width = "35em",)
+```
+
+Moving down the EDA checklist, I observed each variable closely (using table() for categorical variables and summary() for numeric variables). Some results will be summarized in the next section (as this is the Methods section). I then used some basic exploratory graphs (specifically histogram and boxplot) to closely observe the price data, where I identified some issues regarding the distribution of the data, including many outliers. This issue would be reflected in the statistical analyses performed in the next section of this study. This issue and its impact on my study will be discussed more in the preliminary results and summary sections.
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+#train test split
+# 70% training data and 30% testing data (which may be further split into validation and test data)
+data <- data %>%
+  filter(card_type != "Energy")
+set.seed(0)
+sample_ind <- sample(c(TRUE,FALSE), nrow(data), replace = TRUE, prob = c(0.7,0.3))
+train <- setDT(data[sample_ind, ])
+test <- setDT(data[!sample_ind, ])
+dim(train)
+dim(test)
+```
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+# EDA on response variable
+### Note that I deleted the code for closely examining other key variables (e.x. table(), summary(), and exploratory plots) since they took a lot of space in the rmarkdown file. I had an issue with rstudio consistently freezing after working on the file for a while, so I ended up moving some code chunks to a separate file, to ensure there would be no issues when knitting this report. The results of closely looking at each variable were standard as I observed no other issues with the data, which I summarized in the report.
+train %>%
+  filter(price_euros < 200) %>%
+  ggplot(aes(x = price_euros)) +
+  geom_histogram()
+```
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+train %>%
+  # without filter, can barely interpret boxplot
+  #filter(price_euros > 50) %>%
+  ggplot(aes(x = price_euros)) + 
+  geom_boxplot()
+```
+
+Next, in preparation for future stages of the project involving model building (e.x. hyperparameter tuning and model validation), I randomly divided the dataset into training data ($70$% of observations) and testing data ($30$% of observations, which may be further divided into validation and test data in the future). This ensures that the testing data has no influence on my data exploration and my model building. To ensure reproducibility of the study with respect to this step, I set a seed beforehand of $1$ to help reproduce the random samples. Therefore, for the rest of this midterm paper, I will use the training dataset which has $5810$ observations and $12$ rows (the testing dataset has the remaining $2525$ observations).
+
+To conclude this section, I will address the reproducibility issue in this project. Since two variables (current price and days since release) are both dependent on the current day, the reproducibility of this study is negatively affected. To make this study reproducible again, I have exported and included the datasets that were acquired on the date of producing this written html report (March 15, 2024). This way, instead of loading the data through the API, the study can be reproduced by loading the datasets found within my github repository. An alternative solution would be to set a fixed date to use as the "current" date, however the API's prices are updated to the current date each day with no data on past prices.
+
+# Preliminary Results
+
+First, I will expand on the issue regarding the distribution of the response variable, the current average selling price of a card (in Euros). Through my EDA, I discovered that the distribution of the price of cards was heavily skewed to smaller prices, with a large majority of the dataset having prices less than $10$ Euros (with many having prices close to $0$ Euros). This is primarily due to the fact that even among cards with "Rare" rarity, most cards are not very desirable which is reflected by their price. Thus, among "Rare" cards, there are still many cards that act as common cards as opposed to desired rare cards with higher prices. Unfortunately, cutting these observations out would negatively affect the overall scope of my research question and how well this study generalizes, as I would be further limited to the type of cards I am looking at. Furthermore, this issue raises concerns when it comes to cherry picking observations, thus I would like to avoid removing these observations just for the purpose of improving the performance of models I would build in future stages of this project. As a result of the distribution of card prices, most expensive cards are considered outliers (identified through boxplot's IQR method). When dealing with these 'outliers', I chose to keep them in the data as they reflect desirable cards which is part of what I want my models to learn, in order to answer my research question. Finally, in order to improve visibility and interpretability of some exploratory plots in this section, the data was filtered to include only observations with prices higher than a certain threshold. This change is noted and discussed for each of these figures in order to prevent misleading information. 
+
+Moving on to the preliminary results, we can first look at the card names of the $8$ most expensive cards in the training data through the Table 1 found below:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+train %>%
+  group_by(card_name) %>%
+  summarise(
+    max_price = max(price_euros),
+    avg_price = mean(price_euros),
+    min_price = min(price_euros),
+    num_cards = n()
+  ) %>%
+    arrange(-max_price) %>%
+  head(8) %>%
+  kbl(
+    format = "html",
+    escape = F, 
+    col.names = c("Card Name", "Max Price", "Average Price", "Min Price", "Number of Cards"),
+    caption = "Table 1: Top 8 Card Names with Most Expensive Cards (in Euros)") %>%
+  kable_paper("striped", full_width = F)
+```
+
+A few observations can be made through the above table. First, there are some recognizable names such as Charizard, which may indicate that the characters featured in each card may have an effect on its price. Unfortunately, we can also observe that a single character can have cards with different names (with differences such as a star, which frequently appears in the top $8$ most expensive card names). This shows that a card's name may be correlated with other key predictor variables such as rarity (which would cause issues regarding modelling assumptions). This is enforced by observing how the names of some of the most expensive cards have only one card, while some other names have multiple versions of cards with that name (each with their own price). Additionally, from external sources, some cards feature multiple characters in an artwork, while the card's name only reflects one of the characters. Hence, a card's name may not be the best representation for the characters featured within a card, which would be more relevant with respect to the research question (unfortunately, data for the latter is not yet available to be found). 
+
+Next, we can observe how the price of a card is affected by the number of days since its release. Furthermore, we can observe how this relationship differs between different card types (Pokemon vs Trainer cards). This relationship is explored in Figure $2$ below. Please note that the displayed figure is filtered to include observations with a price greater than $30$ Euros:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+train %>%
+  filter(price_euros > 30) %>%
+  ggplot(aes(x = days_old, y = price_euros, color = card_type)) + 
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.3) + 
+  ggtitle("Figure 1: 
+  Pokemon Card Prices (in Euros) Against Number of
+  Days Passed Since Release, For Different Card Types") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Number of Days Passed Since Release") + 
+  ylab("Average Selling Price (Euros)") + 
+  labs(color = "Card Type")
+```
+
+As seen by the above figure, the relationship between the number of days since release and the average selling price of a card appears to be different depending on the card's type. For a Pokemon card type, there does not appear to be much of a relationship between the two variables as observed by the fairly flat regression line. For cards with the Trainer type, there appears to be a stronger relationship between the two variables, reflected through the relatively steeper slope of the regression line. However, as observed through the number of points as well as the confidence interval of the regression line for Trainer cards at this, the number of Trainer cards at this price range is not nearly as abundant as Pokemon cards. Thus, the regression line for Trainer cards may be misleading due to a smaller sample size. When looking at all cards (no price limit), the regression lines for both card types have a slope even closer to $0$, as many observations have prices near $0$ (undesirable rare cards). Overall, this suggests that the relationship between a card's price and its age since release may not be as strong as I thought before conducting analysis.
+
+Next, we can observe the effect of a card's Rarity on its price. From my EDA, there were an observed total of $31$ different rarities (excluding Common and Uncommon) across all cards in the dataset. However, some of these rarities only included a limited number of cards (even less than $10$). To help with the visiblity of the following figure, only rarities with more than $30$ cards are included in Figure $2$. There are no price restrictions in Figure $2$. The relationship between rarity and the average price of a card (of that rarity) can be observed in Figure $2$ below. Figure $2$ also includes a color gradient for each rarity to help visualize how many cards are in each rarity (hence, how "rare" that rarity is):
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+train %>%
+  group_by(rarity) %>%
+  summarise(
+    avg_price = mean(price_euros),
+    count = n()
+  ) %>%
+  filter(count > 30) %>%
+  ggplot(aes(x = rarity, y = avg_price, fill = count)) +
+  scale_fill_gradient(low = "blue", high = "red") +
+  geom_bar(stat = "identity") + coord_flip() + 
+  ggtitle("Figure 2: 
+  Average Pokemon Card Prices (in Euros) For Each Rarity
+  With More Than 30 Cards") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Rarity") + 
+  ylab("Average Selling Price (Euros)") + 
+  labs(fill = "Number of Cards")
+```
+
+Through Figure $2$, we can observe that some rarities tend to have a larger average selling price compared to others. Specifically, we can observe $6$ rarities with an average selling price over $15$ Euros, with "Rare Secret" having the highest at over $40$ Euros. Most of the other rarities have prices near or under $10$ Euros. This supports my prior belief that the rarity of a card (and hence its probability to appear in a pack of cards) has an effect on its price. Unfortunately, as previously stated, there is no official data on the probability rates of each rarity, so my study must focus on rarity labels rather than using the probabilities. Looking at the colour of each bar in Figure $2$, we can get an idea of how rare each rarity is by observing how many cards belong to each rarity. As seen by the strongly red colour of the bar for the "Rare" rarity, this rarity holds around $1600$ cards. The "Rare" rarity also has one of the smallest average selling prices out of the rarities, I believe this is because most of the cards with selling prices near $0$ have "Rare" rarity, hence dragging the average price down for the rarity.
+
+As there appears to be some interesting relationships between some rarities and the average selling price of cards with that rarity, we can further explore this relationship through summary statistics for each rarity as seen in Table $2$ below, sorted in descending order of average selling price:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+train %>%
+  group_by(rarity) %>%
+  summarise(
+    avg_price = round(mean(price_euros),2),
+    med_price = round(median(price_euros),2),
+    max_price = max(price_euros),
+    min_price = min(price_euros),
+    sd_price = round(sd(price_euros),2),
+    count = n(),
+    avg_age = round(mean(days_old),2),
+    min_days = min(days_old)
+  ) %>%
+  arrange(-avg_price) %>%
+  kbl(
+    format = "html",
+    escape = F, 
+    col.names = c("Rarity", "Average Selling Price", "Median Price", "Maximum Price", "Minimum Price", "Standard Deviation of Price", "Number of Cards", "Average Number of Days Since Release", "Days Since Latest Card"),
+    caption = "Table 2: Summary Statistics of Prices (in Euros) and Days Since Release of Each Rarity, Rounded to Two Decimal Places") %>%
+  kable_paper("striped", full_width = T)
+```
+
+Looking at table $2$, that now includes every rarity, we can observe that there are $2$ rarities with much larger average selling prices compared to the other rarities: "Rare Holo Star" and "Rare Shining". As seen in the $6$th column, these rarities do not have many cards. Comparing the means and the medians of prices for each rarity, we can observe that the distribution of prices for almost all the rarities are right-skewed with a mean greater than the median. The exceptions to this are the "LEGEND", "Hyper Rare". Both the "LEGEND" and "Hyper Rare" rarities have fairly even distributions with almost no skew (mean $\approx$ median). The "Rare" rarity is heavily right-skewed, with a mean price that is almost $5$ times larger than its median price. Although the "Rare" rarity has a relatively low mean and median price, it has a maximum price much larger than most rarities at the bottom half of the table (which is sorted by average prices). The number of cards in the "Rare" rarity is also large compared to most rarities, hence we can observe that the "Rare" rarity does contain some cards with very high prices, but the mode of its price distribution is dragged down by a large number of observations with low price. The standard deviation of prices for each rarity seems to be smaller for rarities with smaller average selling prices. However, there are a few exceptions to this pattern such as the "Rare", ""LEGEND" (small sample size),"Rare Holo V", "Rare Holo VMAX", "Rare Holo VSTAR", and more. Finally, looking at the last two columns in table $2$, we can observe that some rarities are discontinued as cards with those rarities haven't been produced in years. Thus, through these columns, we can observe that there may be some correlation between rarity and the number of days since release for cards. This would violate some modelling assumptions and make future models with this data less effective.
+
+To finish the statistical analysis with respect to the rarity variable, we can use the observation from table $2$ regarding the standard deviations to take a closer look at the price distributions for some rarities of interest. The price distributions for rarities "Rare", "Rare VMAX", and "Rare VSTAR" are explored in Figure $3$ below. Please note that there are three bins on the left-most side in the histogram for "Rare" that do not appear in Figure. The left-most bin has a height of near $360$ observations, the second left-most bin has a height of near $240$ observations, and the third has a height of around $160$ observations. Additionally, there are many bins on the far right of the x-axis with very small heights for each rarity (these represent the expensive yet scarce cards). The figure was truncated to improve the visibility of the distributions, but please note the above information to avoid any misleading information:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE, warning = FALSE}
+train %>%
+  filter(rarity == "Rare" | rarity == "Rare Holo VMAX" | rarity == "Rare Holo VSTAR") %>%
+  ggplot(aes(x = price_euros, fill = rarity)) +
+  geom_histogram(binwidth = 0.3, position = "identity", alpha = 0.5) + 
+  ylim(c(0,75)) + 
+  xlim(c(-0.01, 40)) +
+  ggtitle("Figure 3: 
+  Stacked Histogram of Price Distributions for Selected Rarities") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Price of Card (Euros)") + 
+  ylab("Number of Cards") + 
+  labs(fill = "Rarity")
+```
+
+As seen by the stacked histogram in Figure $3$, each rarity has a right-skewed price distribution, confirming the observations from Table $2$. The "Rare" rarity, has many more observations than the other two rarities (remember that three left-side bins for "Rare"'s histogram is cutoff, each having a much larger number of observations compared to the histogram's scale). We can also observe that the "Rare" rarity has more expensive cards compared to the other rarities, as seen by the larger quantity (and height) of red bins on the right side of the histogram (there are more bins further right that follow this pattern, but the figure was truncated as previously explained). Thus, we can see that the "Rare" rarity certainly has expensive cards, but the overall price distribution is heavily affected by the quantity of "Rare" cards that have a small price near $0$. 
+
+From Figure $2$ and Table $2$, we can observe that rarity does appear to have some effect on the prices of cards. However, from Figure $3$, we can clearly see that rarity aside, there is a separate driving factor(s) that affect the price of a card.
+
+Next, I will analyze the artist variable, which has $278$ different factor levels in the training data. A very similar analysis to the analysis doen for rarity, can be performed for the artist variable as well. To avoid repetitiveness, I will instead analyze how an artist can affect the relationship between price of card and the key variable, the number of days since release. First, I will look at the top $10$ artists with the most amount of cards they illustrated. This is shown in a faceted scatterplot with linear regression lines in Figure $4$ below:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+artists <- train %>%
+  group_by(artist) %>%
+  summarise(n = n()) %>%
+  arrange(-n) %>%
+  head(10)
+
+train[train$artist %in% artists$artist] %>%
+
+  ggplot(aes(x = days_old, y = price_euros)) + 
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) + 
+  facet_wrap(~artist, nrow = 2) +
+  ggtitle("Figure 4: 
+  Faceted Scatterplot of Card Prices (Euros) 
+  Over Number of Days Passed for Top 10 Most Active Artists (All Time)") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Number of Days Since Release") + 
+  ylab("Price of Card (Euros)")
+```
+
+First, looking only at the $y$ values for observations for each artist, we can see that some artists, such as Shin Nagasawa, have not illustrated any cards that have a price larger than $50$ Euros. Meanwhile, there are artists such as Masakazu Fukuda who have illustrated multiple cards that have a current average selling price of over $100$ Euros. Now, looking at the entirety of each scatterplot, we can observe that different artists started drawing for cards at different days (indicated by the right-most points for each artist). Looking the other way, artists may not be currently drawing for cards, such as Ryo Ueda and Ken Sugimori whose points are not as far to the left as other artists (this will become more apparent in the next figure). Looking at the regression lines between price and number of days since release, we can see for most artists, the regression lines remain relatively flat like in the general analysis. However, the slope of the regression line differs for each artist, with Masakazu Fukuda having a steeper slope, as the expensive cards he has worked on are relatively old (while the recent cards he worked on are all relatively cheap). Thus, we can observe that each artist may have an effect on not just the price of cards, but also how the price is affected by how old the card is.
+
+This analysis can be continued in Figure $5$ below, which displays the relationship between the same variables, but for the artists who have illustrated the top $10$ most expensive cards in the training dataset:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+top_artists <- train %>%
+  group_by(artist) %>%
+  summarise(top_price = max(price_euros)) %>%
+  arrange(-top_price) %>%
+  head(10)
+
+train[train$artist %in% top_artists$artist] %>%
+  ggplot(aes(x = days_old, y = price_euros)) + 
+  geom_point() +
+  facet_wrap(~artist, nrow = 2) + 
+  ggtitle("Figure 5: 
+  Faceted Scatterplot of Card Prices (Euros) 
+  Over Number of Days Passed for 
+  Top 10 Artists with Most Expensive Illustrated Cards") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Number of Days Since Release") + 
+  ylab("Price of Card (Euros)")
+```
+
+Looking at Figure $5$, most of the analysis from Figure $4$ can be repeated (although some artists did not have enough observations to apply a meaningful regression line). However, it is more apparent in Figure $5$ that artists may be correlated with the number of days passed since release. This is seen in Figure $5$ through artists such as Tagawa, Kimiya Masago, and Shin-ichi Yoshida whose illustrated cards are specific to a limited time frame. Thorugh the above Figure, we can also see that although artists can illustrate cards that turn out very expensive, they can also illustrate cards that have a very low current selling price. Furthermore, comparing Figures $4$ and $5$, we can see that certain artists have illustrated multiple expensive cards, while other artists have illustrated no expensive cards. While this can certainly be an effect of the artist, it may also be possible that certain artists are more often assigned to illustrate cards with higher rarity (and cards that are meant to be more desirable and expensive). Thus, through this analysis, it may be possible that the artist variable is more correlated with rarity and the number of days since release than I had previously thought (before any analysis).
+
+
+Finally, we can analyze how the total number of cards in a certain card's set affects the price of that card. Figure $6$ below shows a scatterplot for the prices of cards plotted against the total number of cards in that card's set. Alongside those variables, the scatterplot is coloured on a gradient based on how many days have passed since its release. Through this gradient, we can observe the observations with respect to time passed:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+train %>%
+  ggplot(aes(x = total_cards, y = price_euros, color = days_old)) + 
+  scale_color_gradient(low = "green", high = "red") +
+  geom_point(alpha= 1) + 
+  ggtitle("Figure 6: 
+  Coloured Scatterplot of Card Prices (Euros) 
+  Total Number of Cards in Set With 
+  Gradient for Number of Days Since Release") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Total Number of Cards in Set") + 
+  ylab("Price of Card (Euros)") + 
+  labs(color = "Number of Days 
+  Since Release")
+```
+
+In Figure $6$, we observe cards with prices over $100$ Euros spread across the $x$ axis for total number of cards in set. When the total number of cards is near $110$ and around $200$, we observe more frequent quantities of cards with higher prices (this will be explained in the next figure). We also observe a few observations/outliers with very large prices in sets with smaller numbers of cards (less than $100$ cards in a set). The regression line (not fitted in the figure to improve visibility) has a slope near $0$ indicating that the total number of cards in a set may not have a strong effect on the price of a card. When looking at the gradient, we can observe that older sets tend to have a smaller total number of cards compared to newer sets. Furthermore, we can see that most expensive cards (especially near the $500$ Euro range or greater) are from older sets. Hence, it is possible that the price is being driven by other factors, rather than the total number of cards in a set. Ignoring outliers, we can see that the distribution of prices over total number of cards in a set is fairly flat (with a very flat regression line), thus we can expect that the total number of cards in a set will not be a very good predictor.
+
+To explain the large number of expensive cards near $110$ and around $200$ total cards in set, we can observe the distribution of the total number of cards in a set through a basic histogram (from my previous EDA steps) as seen in Figure $7$:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+train %>%
+  ggplot(aes(x=total_cards)) + 
+  geom_histogram() + 
+  ggtitle("Figure 7: 
+  Histogram of Total Number of Cards in Set") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Total Number of Cards in Set") + 
+  ylab("Number of Cards")
+```
+
+As seen in Figure $7$ above, the peaks of the histogram where bins reach a high number of observations correspond (for the most part) to high frequencies of expensive cards in Figure $6$, particularly near areas where the total number of cards is near $110$, $175$, and $210$. This helps support the idea that the total number of cards in a set does not have an effect on prices, since these areas with higher frequencies would naturally be more likely to contain cards with higher prices (and lower prices). Thus, the distribution of the total number of cards in a set may be responsible for the patterns observed in Figure $6$, and the effect on price would instead be explained by other driving factors. At this stage, however, it is too early to eliminate the variable before formally testing it when building a model (e.x. a t-test).
+
+# Summary and Reflective Thoughts
+
+The most important finding I made during my exploration of the data was the distribution of the response variable, the current average selling price of a card. Through my exploration, I discovered that the distribution was heavily right-skewed with many of the cards having a price near $0$. Upon further exploration, I found that a lot of these observations came from cards with the "Rare" rarity. When looking at the total number of days since a card's release, I was able to observe a weak relationship between the key variable and the response. This was emphasized by the almost flat regression curve when looking at all observations in the training data. When looking at rarity as a key factor variable, I observed more interesting findings where some rarities appeared to have much higher average prices compared to other rarities. I found that most of the rarities had a right-skewed price distribution, with a few exceptions that had negligible skew. Thus, within each rarity, most cards would still be undesirable which would be reflected by the right skew. This indicated that although rarity may have an effect on card prices, it is not the only driving factor. 
+
+Looking at the artists of cards, I observed that some artists had worked on multiple expensive cards, while others had only worked on cards with prices close to $0$. Furthermore, I observed how the relationship between number of days since release and price of a card may be different for each artist. Looking at the total number of cards in a set as a predictor for card prices, I found that the two variables did not have a strong relationship. This was supported by the flat price distribution over the number of cards in a set, as well as looking at the histogram of the distribution for the number of cards in a set.
+
+Throughout my exploration, I continuously looked for ways to explore any correlation between my potential predictor variables. I found multiple instances of possible correlation, some which I expected and some which surprised me. This correlation between predictors would violate modelling assumptions (e.x. for linear regression) and would impose limitations on my future models. 
+
+Once again, since the API delivers data that is updated to the current day (e.x. current price), I faced potential issues regarding repropducibility of this study. To counteract this, I exported the data (collected through the API in the original write-up) and created an alternative version of this file that reads the data from file, rather than the API. Thus, to be able to reproduce the results in my writeup, a third party would use the data from the day of submission (March 15, 2024) rather than requesting live data from the API.
+
+Overall, I was able to explore my research question with a dataset I am personally interested in, however I am worried when it comes to modelling this data. This is primarily due to failing to find significantly strong relationships between my key variables and the response variable (the distribution of the response variable may play a significant part in this). Although I was able to get, clean/wrangle, and explore the data effectively, I am concerned for future stages of this project. At the moment, I am trying to find additional variables, and in the worst case, considering a new dataset with a new research question that could lead to stronger results and more effective models, as the relationships regarding my current variables and dataset do not appear to be as strong as I had hoped. An example of a variable I think would have a strong relationship with card price would be a scale describing ratings of each card given by individuals. However, this data does not currently exist in available APIs and collecting data for this variable would be personally infeasible given the number of cards that would require ratings.
